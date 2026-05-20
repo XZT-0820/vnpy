@@ -11,7 +11,7 @@ from pandas.core.interchange.dataframe_protocol import DataFrame
 from .constant import Direction, Exchange, Interval, Offset, Status, Product, OptionType, OrderType, FactorType
 
 #导入因子定义模块
-from vnpy.alpha.factor_define import (
+from vnpy.factor_define import (
     FACTOR_REGISTRY,
     PARAMS_REGISTRY,
     FACTOR_NAMES
@@ -472,8 +472,12 @@ class IndustryData(BaseData):
     market: str = "cn"
 
 @dataclass
-class FactorRequest: # 请求rqdata factor   rq.get_factor  或者 请求factor_define
-    is_fd: bool   # 是否请求factor_define
+class FactorRequest:
+    """
+    is_FD: False 通过rq.get_factor请求rqdata的factor
+    is_FD: True 通过factor_define请求自定义的因子函数
+    """
+    is_FD: bool
     start: Datetime | Date
     end: Datetime | Date
     symbols: list[str]
@@ -486,7 +490,7 @@ class FactorRequest: # 请求rqdata factor   rq.get_factor  或者 请求factor_
         self.vt_symbols: list[str] = []
         self.vt_symbols = [f"{symbol}.{exchange.value}" for symbol, exchange in zip(self.symbols, self.exchanges)]
 
-        if self.is_fd:
+        if self.is_FD:
             self.factor_func = FACTOR_REGISTRY[self.factor_name]["func"]
             self.factor_type = FACTOR_REGISTRY[self.factor_name]["type"]
 
@@ -502,3 +506,5 @@ class FactorData(BaseData):
     def __post_init__(self) -> None:
         """"""
         self.vt_symbol: str = f"{self.symbol}.{self.exchange.value}"
+
+

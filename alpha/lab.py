@@ -20,10 +20,11 @@ from .logger import logger
 from .dataset import AlphaDataset, to_datetime
 from .model import AlphaModel
 
-# 导入因子定义模块
-from factor_define import (
+#导入因子定义模块
+from vnpy.factor_define import (
     FACTOR_REGISTRY,
     PARAMS_REGISTRY,
+    FACTOR_NAMES
 )
 
 class AlphaLab:
@@ -805,7 +806,7 @@ class AlphaLab:
         请求factor_define, 计算指定时间段的日频因子数据，
 
         Args:
-            is_df: True
+            is_FD: True
             start: datetime | date
             end: datetime | date
             symbols: list[str]
