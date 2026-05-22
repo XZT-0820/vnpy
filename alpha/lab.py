@@ -1,4 +1,6 @@
+import gc
 import json
+import shutil
 import shelve
 import pickle
 from pathlib import Path
@@ -17,7 +19,7 @@ from win32comext.shell.demos.servers.folder_view import folderViewImplContextMen
 from yfinance import Industry
 
 from .logger import logger
-from .dataset import AlphaDataset, to_datetime
+from .dataset import AlphaDataset, to_datetime, Segment
 from .model import AlphaModel
 
 #导入因子定义模块
@@ -648,14 +650,114 @@ class AlphaLab:
         return trading_days
 
     def save_dataset(self, name: str, dataset: AlphaDataset) -> None:
-        """Save dataset"""
-        file_path: Path = self.dataset_path.joinpath(f"{name}.pkl")
+        """Save dataset as directory with parquet files + json metadata"""
+        dataset_dir: Path = self.dataset_path.joinpath(name)
+        dataset_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(file_path, mode="wb") as f:
-            pickle.dump(dataset, f)
+        # Save DataFrames to parquet (streaming write, no memory spike)
+        if dataset.result_df is not None:
+            dataset.result_df.write_parquet(dataset_dir.joinpath("result.parquet"))
+            dataset._result_path = dataset_dir.joinpath("result.parquet")
+        if dataset.raw_df is not None:
+            dataset.raw_df.write_parquet(dataset_dir.joinpath("raw.parquet"))
+            dataset._raw_path = dataset_dir.joinpath("raw.parquet")
+        if dataset.infer_df is not None:
+            dataset.infer_df.write_parquet(dataset_dir.joinpath("infer.parquet"))
+            dataset._infer_path = dataset_dir.joinpath("infer.parquet")
+        if dataset.learn_df is not None:
+            dataset.learn_df.write_parquet(dataset_dir.joinpath("learn.parquet"))
+            dataset._learn_path = dataset_dir.joinpath("learn.parquet")
+
+        # Release memory-held DataFrames after persist
+        dataset.result_df = None
+        dataset.raw_df = None
+        dataset.infer_df = None
+        dataset.learn_df = None
+        gc.collect()
+
+        # Save metadata to json (cross-version compatible)
+        meta: dict = {
+            "data_periods": {
+                k.name if hasattr(k, "name") else str(k): v
+                for k, v in dataset.data_periods.items()
+            },
+            "feature_names": list(dataset.feature_expressions.keys()),
+            "label_expression": dataset.label_expression,
+            "process_type": dataset.process_type,
+            "has_result": dataset._result_path is not None,
+            "has_raw": dataset._raw_path is not None,
+            "has_infer": dataset._infer_path is not None,
+            "has_learn": dataset._learn_path is not None,
+        }
+        with open(dataset_dir.joinpath("meta.json"), mode="w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, default=str)
 
     def load_dataset(self, name: str) -> AlphaDataset | None:
-        """Load dataset"""
+        """Load dataset from directory with lazy loading support"""
+        dataset_dir: Path = self.dataset_path.joinpath(name)
+
+        # Try new format first
+        if dataset_dir.exists() and dataset_dir.is_dir():
+            meta_path: Path = dataset_dir.joinpath("meta.json")
+            if not meta_path.exists():
+                logger.error(f"Dataset {name} directory exists but meta.json missing")
+                return None
+
+            with open(meta_path, mode="r", encoding="utf-8") as f:
+                meta: dict = json.load(f)
+
+            # Reconstruct data_periods
+            periods: dict = {}
+            for k, v in meta.get("data_periods", {}).items():
+                try:
+                    seg = Segment[k]
+                except KeyError:
+                    seg_map: dict = {
+                        "1": Segment.TRAIN, "2": Segment.VALID, "3": Segment.TEST,
+                        "TRAIN": Segment.TRAIN, "VALID": Segment.VALID, "TEST": Segment.TEST
+                    }
+                    seg = seg_map.get(k, Segment.TRAIN)
+                v = [datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S") for date_str in v]
+                periods[seg] = tuple(v)
+
+            # Create instance with dummy df, then clear it
+            dummy_df: pl.DataFrame = pl.DataFrame({"datetime": [], "vt_symbol": []})
+            dataset: AlphaDataset = AlphaDataset(
+                df=dummy_df,
+                train_period=periods.get(Segment.TRAIN, ("", "")),
+                valid_period=periods.get(Segment.VALID, ("", "")),
+                test_period=periods.get(Segment.TEST, ("", "")),
+                process_type=meta.get("process_type", "append"),
+            )
+            dataset.df = None  # Release dummy immediately
+
+            # Restore metadata
+            dataset.data_periods = periods
+            dataset.feature_expressions = {
+                name: "" for name in meta.get("feature_names", [])
+            }
+            dataset.label_expression = meta.get("label_expression", "")
+            dataset.process_type = meta.get("process_type", "append")
+            dataset.infer_processors = []
+            dataset.learn_processors = []
+
+            # Set lazy-load paths
+            if meta.get("has_result"):
+                dataset._result_path = dataset_dir.joinpath("result.parquet")
+            if meta.get("has_raw"):
+                dataset._raw_path = dataset_dir.joinpath("raw.parquet")
+            if meta.get("has_infer"):
+                dataset._infer_path = dataset_dir.joinpath("infer.parquet")
+            if meta.get("has_learn"):
+                dataset._learn_path = dataset_dir.joinpath("learn.parquet")
+
+            return dataset
+
+        # Fallback to legacy .pkl format
+        return self._load_dataset_legacy(name)
+
+    def _load_dataset_legacy(self, name: str) -> AlphaDataset | None:
+        """Load dataset from legacy .pkl file"""
         file_path: Path = self.dataset_path.joinpath(f"{name}.pkl")
         if not file_path.exists():
             logger.error(f"Dataset file {name} does not exist")
@@ -667,17 +769,31 @@ class AlphaLab:
 
     def remove_dataset(self, name: str) -> bool:
         """Remove dataset"""
-        file_path: Path = self.dataset_path.joinpath(f"{name}.pkl")
-        if not file_path.exists():
-            logger.error(f"Dataset file {name} does not exist")
-            return False
+        dataset_dir: Path = self.dataset_path.joinpath(name)
+        if dataset_dir.exists() and dataset_dir.is_dir():
+            shutil.rmtree(dataset_dir)
+            return True
 
-        file_path.unlink()
-        return True
+        # Fallback to legacy .pkl
+        file_path: Path = self.dataset_path.joinpath(f"{name}.pkl")
+        if file_path.exists():
+            file_path.unlink()
+            return True
+
+        logger.error(f"Dataset {name} does not exist")
+        return False
 
     def list_all_datasets(self) -> list[str]:
         """List all datasets"""
-        return [file.stem for file in self.dataset_path.glob("*.pkl")]
+        names: set[str] = set()
+        # New format: directories with meta.json
+        for item in self.dataset_path.iterdir():
+            if item.is_dir() and item.joinpath("meta.json").exists():
+                names.add(item.name)
+        # Legacy format: .pkl files
+        for file in self.dataset_path.glob("*.pkl"):
+            names.add(file.stem)
+        return sorted(list(names))
 
     def save_model(self, name: str, model: AlphaModel) -> None:
         """Save model"""
@@ -839,7 +955,7 @@ class AlphaLab:
                     start_idx = i
                     break
 
-        logger.info(f'开始计算...')
+        logger.info(f'{factor_name}...')
 
         # 获取因子配置
         config = PARAMS_REGISTRY.get(factor_name, {})
@@ -995,13 +1111,18 @@ class AlphaLab:
         r"""
         从 D:\Aquant project\MF\MF_lab\Factor\FactorType\factorname.parquet 加载因子数据
 
+        req.symbols = None 则加载全部
+
         return:
         pl.DataFrame  columns: ["vt_symbol", "datetime", "data"]
 
         """
         start = req.start
         end = req.end
-        symbols = req.vt_symbols
+        if req.symbols is not None and req.exchanges is not None:
+            symbols = req.vt_symbols
+        else:
+            symbols = None
         factor_name = req.factor_name
         factor_type = req.factor_type
 
@@ -1015,7 +1136,21 @@ class AlphaLab:
             return pl.DataFrame()
 
         factor_df = pl.scan_parquet(file_path)
-        factor_df = factor_df.filter((pl.col("datetime") >= start) & (pl.col("datetime") <= end) & (pl.col("vt_symbol").is_in(symbols))).sort(['vt_symbol', 'datetime'])
+
+        if start is not None and end is not None:
+            factor_df = factor_df.filter((pl.col("datetime") >= start) & (pl.col("datetime") <= end) & (pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(['vt_symbol', 'datetime'])
+        if start is not None and end is None:
+            factor_df = factor_df.filter((pl.col("datetime") >= start) & (
+                pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(
+                ['vt_symbol', 'datetime'])
+        if start is None and end is not None:
+            factor_df = factor_df.filter((pl.col("datetime") <= end) & (
+                pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(
+                ['vt_symbol', 'datetime'])
+        if start is None and end is None:
+            factor_df = factor_df.filter((
+                pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(
+                ['vt_symbol', 'datetime'])
         factor_df = factor_df.collect()
 
         found_symbols = list(factor_df['vt_symbol'].unique())
@@ -1048,7 +1183,10 @@ class AlphaLab:
         """
         start = req.start
         end = req.end
-        symbols = req.vt_symbols
+        if req.symbols is not None and req.exchanges is not None:
+            symbols = req.vt_symbols
+        else:
+            symbols = None
         factor_name = req.factor_name
         factor_type = req.factor_type
 

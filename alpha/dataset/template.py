@@ -1,3 +1,4 @@
+import gc
 import time
 from datetime import datetime
 from typing import cast
@@ -34,11 +35,18 @@ class AlphaDataset:
         """Constructor"""
         self.df: pl.DataFrame = df
 
-        # DataFrames for processed data
-        self.result_df: pl.DataFrame
-        self.raw_df: pl.DataFrame
-        self.infer_df: pl.DataFrame
-        self.learn_df: pl.DataFrame
+        # DataFrames for processed data (runtime in-memory)
+        self._result_df: pl.DataFrame | None = None
+        self._raw_df: pl.DataFrame | None = None
+        self._infer_df: pl.DataFrame | None = None
+        self._learn_df: pl.DataFrame | None = None
+
+        # Paths for lazy loading from disk (persisted datasets)
+        from pathlib import Path
+        self._result_path: Path | None = None
+        self._raw_path: Path | None = None
+        self._infer_path: Path | None = None
+        self._learn_path: Path | None = None
 
         # New version
         self.data_periods: dict[Segment, tuple[str, str]] = {
@@ -54,6 +62,61 @@ class AlphaDataset:
         self.process_type: str = process_type
         self.infer_processors: list = []
         self.learn_processors: list = []
+
+    # ------------------------------------------------------------------ #
+    # Lazy-loading properties for DataFrames
+    # ------------------------------------------------------------------ #
+    @property
+    def result_df(self) -> pl.DataFrame | None:
+        if self._result_df is not None:
+            return self._result_df
+        if self._result_path is not None and self._result_path.exists():
+            self._result_df = pl.read_parquet(self._result_path)
+            return self._result_df
+        return None
+
+    @result_df.setter
+    def result_df(self, value: pl.DataFrame | None) -> None:
+        self._result_df = value
+
+    @property
+    def raw_df(self) -> pl.DataFrame | None:
+        if self._raw_df is not None:
+            return self._raw_df
+        if self._raw_path is not None and self._raw_path.exists():
+            self._raw_df = pl.read_parquet(self._raw_path)
+            return self._raw_df
+        return None
+
+    @raw_df.setter
+    def raw_df(self, value: pl.DataFrame | None) -> None:
+        self._raw_df = value
+
+    @property
+    def infer_df(self) -> pl.DataFrame | None:
+        if self._infer_df is not None:
+            return self._infer_df
+        if self._infer_path is not None and self._infer_path.exists():
+            self._infer_df = pl.read_parquet(self._infer_path)
+            return self._infer_df
+        return None
+
+    @infer_df.setter
+    def infer_df(self, value: pl.DataFrame | None) -> None:
+        self._infer_df = value
+
+    @property
+    def learn_df(self) -> pl.DataFrame | None:
+        if self._learn_df is not None:
+            return self._learn_df
+        if self._learn_path is not None and self._learn_path.exists():
+            self._learn_df = pl.read_parquet(self._learn_path)
+            return self._learn_df
+        return None
+
+    @learn_df.setter
+    def learn_df(self, value: pl.DataFrame | None) -> None:
+        self._learn_df = value
 
     def add_feature(
         self,
@@ -77,6 +140,49 @@ class AlphaDataset:
         Set the label expression
         """
         self.label_expression = expression
+
+    def add_lag_features(
+        self,
+        factor_name: str,
+        factor_df: pl.DataFrame,
+        lag_days: int = 10
+    ) -> None:
+        """
+        Generate lagged features for a single factor and add them to the dataset.
+
+        Uses Polars window functions (over) for vectorized group-wise lag,
+        avoiding per-symbol iteration and unnecessary DataFrame fragmentation.
+
+        Parameters
+        ----------
+        factor_name : str
+            Base name of the factor.
+        factor_df : pl.DataFrame
+            Must contain columns ["datetime", "vt_symbol", "data"].
+        lag_days : int, default 10
+            Number of lag days to generate (0 to lag_days inclusive).
+        """
+        if factor_df.is_empty():
+            return
+
+        required: set[str] = {"datetime", "vt_symbol", "data"}
+        if not required.issubset(set(factor_df.columns)):
+            raise ValueError(
+                f"factor_df must contain columns {required}, got {factor_df.columns}"
+            )
+
+        # Ensure sorted per symbol for correct shift semantics
+        sorted_df: pl.DataFrame = factor_df.sort(["vt_symbol", "datetime"])
+
+        for lag in range(lag_days + 1):
+            lagged: pl.DataFrame = sorted_df.with_columns(
+                pl.col("data").shift(lag).over("vt_symbol").alias("data")
+            )
+
+            feature_name: str = factor_name if lag == 0 else f"{factor_name}_lag_{lag}"
+            self.add_feature(feature_name, result=lagged)
+
+        logger.info(f"{factor_name}: added {lag_days} lag features")
 
     def add_processor(self, task: str, processor: Callable[[pl.DataFrame], None]) -> None:
         """
@@ -151,6 +257,12 @@ class AlphaDataset:
 
         # Only keep feature columns
         select_columns: list[str] = ["datetime", "vt_symbol"] + raw_df.columns[self.df.width:]
+
+        # Release intermediate state to free memory
+        self.df = None
+        self.feature_results.clear()
+        gc.collect()
+
         self.raw_df = raw_df.select(select_columns).sort(["datetime", "vt_symbol"])
 
         self.infer_df = self.raw_df

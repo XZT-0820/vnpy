@@ -7,6 +7,7 @@ from datetime import datetime as Datetime
 from datetime import date as Date
 
 from pandas.core.interchange.dataframe_protocol import DataFrame
+from polygon.rest.models import exchanges
 
 from .constant import Direction, Exchange, Interval, Offset, Status, Product, OptionType, OrderType, FactorType
 
@@ -478,17 +479,18 @@ class FactorRequest:
     is_FD: True 通过factor_define请求自定义的因子函数
     """
     is_FD: bool
-    start: Datetime | Date
-    end: Datetime | Date
-    symbols: list[str]
-    exchanges: list[Exchange]
+    start: Datetime | Date | None
+    end: Datetime | Date | None
+    symbols: list[str] | None
+    exchanges: list[Exchange] | None
     factor_name: str
     factor_type: FactorType = FUNDAMENTAL
     market: str = "cn"
     def __post_init__(self) -> None:
         """"""
-        self.vt_symbols: list[str] = []
-        self.vt_symbols = [f"{symbol}.{exchange.value}" for symbol, exchange in zip(self.symbols, self.exchanges)]
+        if self.symbols is not None and self.exchanges is not None:
+            self.vt_symbols: list[str] = []
+            self.vt_symbols = [f"{symbol}.{exchange.value}" for symbol, exchange in zip(self.symbols, self.exchanges)]
 
         if self.is_FD:
             self.factor_func = FACTOR_REGISTRY[self.factor_name]["func"]
