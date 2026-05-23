@@ -71,7 +71,7 @@ class BacktestingEngine2:
         self.cash: float = 0
         self.signal_df: pl.DataFrame
 
-        self.adjust_type: str = 'post'  #回测用什么数据
+        self.adjust_type: str = 'pre'  #回测用什么数据
     def set_parameters(
         self,
         vt_symbols: list[str],
@@ -83,7 +83,7 @@ class BacktestingEngine2:
         annual_days: int = 240,
         min_commission: float = 5,
         slippage: float = 0.0001,
-        adjust_type: str = 'post'
+        adjust_type: str = 'none'
     ) -> None:
         """Set parameters"""
         self.vt_symbols = vt_symbols
@@ -682,7 +682,7 @@ class BacktestingEngine2:
         # Push order status update for unfilled orders
         if order.status == Status.SUBMITTING:
             order.status = Status.NOTTRADED
-            self.strategy.update_order2(order)
+            self.strategy.update_order(order)
 
         bar: BarData = self.bars[order.vt_symbol]
 
@@ -737,7 +737,7 @@ class BacktestingEngine2:
                 if max_volume == 0:
                     order.status = Status.REJECTED
                     order.traded = 0
-                    self.strategy.update_order2(order)
+                    self.strategy.update_order(order)
                     if order.vt_orderid in self.active_limit_orders:
                         self.active_limit_orders.pop(order.vt_orderid)
                     return
@@ -751,12 +751,14 @@ class BacktestingEngine2:
             else:
                 order.traded = order.volume
                 order.status = Status.ALLTRADED
+            # order.traded = order.volume
+            # order.status = Status.ALLTRADED
         else:
             trade_commission = max(trade_turnover * self.short_rates[order.vt_symbol], self.min_commission)
             order.traded = order.volume
             order.status = Status.ALLTRADED
         # ==================== 成交 ====================
-        self.strategy.update_order2(order)
+        self.strategy.update_order(order)
 
         # 从活跃订单中移除
         if order.vt_orderid in self.active_limit_orders:

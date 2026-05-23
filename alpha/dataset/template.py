@@ -6,6 +6,7 @@ from collections.abc import Callable
 from multiprocessing import get_context
 from multiprocessing.context import BaseContext
 
+import numpy as np
 import polars as pl
 import pandas as pd
 from tqdm import tqdm
@@ -398,6 +399,87 @@ class AlphaDataset:
 
         # Perform analysis
         create_full_tear_sheet(clean_data)
+
+    def extract_lambdarank_data(
+        self,
+        segment: Segment,
+        n_quantiles: int = 5,
+    ) -> tuple[pd.DataFrame, np.ndarray, pl.DataFrame, np.ndarray]:
+        """
+        从 AlphaDataset 提取 LambdaRank 所需数据
+
+        每天内按 label 排序后等频分成 n_quantiles 档，
+        返回可直接传入 lgb.Dataset 的 pandas DataFrame
+
+        Parameters
+        ----------
+        segment : Segment
+            TRAIN / VALID / TEST
+        n_quantiles : int
+            分档数量，默认 5
+
+        Returns
+        -------
+        X : pd.DataFrame
+            特征矩阵（pandas，列名 = 原始特征名）
+        y : np.ndarray
+            排名标签，取值 0 ~ n_quantiles-1
+        df_meta : pl.DataFrame
+            元数据，含 datetime、vt_symbol
+        group_sizes : np.ndarray
+            每个交易日的样本数，用于 lgb.Dataset(group=...)
+        """
+        if segment == Segment.TEST:
+            df: pl.DataFrame = self.fetch_infer(segment)
+        else:
+            df = self.fetch_learn(segment)
+
+        df = df.sort("datetime")
+
+        # 计算每日排名和样本数（链式合并）
+        df = df.with_columns([
+            pl.col("label").rank("ordinal").over("datetime").alias("_rank"),
+            pl.col("label").count().over("datetime").alias("_day_count"),
+        ])
+
+        # 映射到 0 ~ n_quantiles-1
+        df = df.with_columns(
+            pl.when(pl.col("_day_count") == 1)
+            .then(n_quantiles // 2)
+            .otherwise(
+                ((pl.col("_rank") - 1) / (pl.col("_day_count") - 1) * (n_quantiles - 1))
+                .cast(pl.Int64)
+            )
+            .alias("rank_label")
+        )
+
+        logger.info(f'{segment.name}, 标签值: {df["rank_label"].unique().to_numpy()}')
+
+        # 提取特征、标签、元数据
+        meta_cols = ["datetime", "vt_symbol"]
+        df_meta = df.select(meta_cols)
+
+        exclude_cols = set(meta_cols + ["label", "rank_label", "_rank", "_day_count"])
+        feature_cols = [c for c in df.columns if c not in exclude_cols]
+
+        X: pd.DataFrame = df.select(feature_cols).to_pandas()
+        y: np.ndarray = df["rank_label"].to_numpy()
+
+        # 计算 group_sizes：按 datetime 分组计数
+        group_sizes: np.ndarray = (
+            df.group_by("datetime")
+            .agg(pl.count().alias("cnt"))
+            .sort("datetime")["cnt"]
+            .to_numpy()
+        )
+
+        logger.info(f"{segment.name}, X.shape={X.shape}")
+
+
+        # 清理临时列
+        df = df.drop(["_rank", "_day_count", "rank_label"])
+
+        return X, y, df_meta, group_sizes
 
 
 def query_by_time(df: pl.DataFrame, start: datetime | str = "", end: datetime | str = "") -> pl.DataFrame:
