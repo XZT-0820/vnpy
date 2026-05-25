@@ -71,7 +71,7 @@ class BacktestingEngine2:
         self.cash: float = 0
         self.signal_df: pl.DataFrame
 
-        self.adjust_type: str = 'pre'  #回测用什么数据
+        self.adjust_type: str = 'none'  #回测用什么数据
     def set_parameters(
         self,
         vt_symbols: list[str],
@@ -697,19 +697,23 @@ class BacktestingEngine2:
         limit_up: float = round_to(pre_close * 1.1, pricetick)
         limit_down: float = round_to(pre_close * 0.9, pricetick)
 
+        # 如果价格跳空超过 15%，认为是除权，不应用涨跌停限制
+        price_gap_ratio: float = abs(bar.close_price - pre_close) / pre_close if pre_close else 0
+        is_ex_rights: bool = price_gap_ratio > 0.15
+
         # 检查是否满足价格成交条件
         long_cross: bool = (
                 order.direction == Direction.LONG
                 and order.price >= long_cross_price
                 and long_cross_price > 0
-                and bar.low_price < limit_up
+                and (bar.low_price < limit_up or is_ex_rights)
         )
 
         short_cross: bool = (
                 order.direction == Direction.SHORT
                 and order.price <= short_cross_price
                 and short_cross_price > 0
-                and bar.high_price > limit_down
+                and (bar.high_price > limit_down or is_ex_rights)
         )
 
         if not long_cross and not short_cross:

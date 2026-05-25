@@ -146,7 +146,6 @@ class AlphaLab:
                 "volume": bar.volume,
                 "turnover": bar.turnover,
                 "open_interest": bar.open_interest,
-                "adjust_type": bar.adjust_type
             }
             data.append(bar_data)
 
@@ -158,7 +157,7 @@ class AlphaLab:
 
             new_df = pl.concat([old_df, new_df])
 
-            new_df = new_df.unique(subset=["datetime"])
+            new_df = new_df.unique(subset=["datetime"],keep = "last")
 
             new_df = new_df.sort("datetime")
 
@@ -835,15 +834,46 @@ class AlphaLab:
         """List all models"""
         return [file.stem for file in self.model_path.glob("*.pkl")]
 
-    def save_signal(self, name: str, signal: pl.DataFrame) -> None:
-        """Save signal"""
-        file_path: Path = self.signal_path.joinpath(f"{name}.parquet")
-
+    def save_signal(self, name: str, signal: pl.DataFrame, OS: int = 0) -> None:
+        """Save signal
+            0: out of sample TEST
+            1: in sample TRAIN
+            2: VALID
+            3: TRAIN + VALID
+            4: ALL
+        """
+        dir_path: Path = self.signal_path.joinpath(f"{name}")
+        dir_path.mkdir(parents=True, exist_ok=True)
+        if OS == 0:
+            file_path: Path = dir_path.joinpath(f"{name}_OS.parquet")
+        elif OS == 1:
+            file_path: Path = dir_path.joinpath(f"{name}_IS.parquet")
+        elif OS == 2:
+            file_path: Path = dir_path.joinpath(f"{name}_VA.parquet")
+        elif OS == 3:
+            file_path: Path = dir_path.joinpath(f"{name}_TV.parquet")
+        elif OS == 4:
+            file_path: Path = dir_path.joinpath(f"{name}_ALL.parquet")
         signal.write_parquet(file_path)
 
-    def load_signal(self, name: str) -> pl.DataFrame | None:
+    def load_signal(self, name: str, OS: int = 0) -> pl.DataFrame | None:
         """Load signal"""
-        file_path: Path = self.signal_path.joinpath(f"{name}.parquet")
+        dir_path: Path = self.signal_path.joinpath(f"{name}")
+        if not dir_path.exists():
+            logger.error(f"Signal dir {name} does not exist")
+            return None
+
+        if OS == 0:
+            file_path: Path = dir_path.joinpath(f"{name}_OS.parquet")
+        elif OS == 1:
+            file_path: Path = dir_path.joinpath(f"{name}_IS.parquet")
+        elif OS == 2:
+            file_path: Path = dir_path.joinpath(f"{name}_VA.parquet")
+        elif OS == 3:
+            file_path: Path = dir_path.joinpath(f"{name}_TV.parquet")
+        elif OS == 4:
+            file_path: Path = dir_path.joinpath(f"{name}_ALL.parquet")
+
         if not file_path.exists():
             logger.error(f"Signal file {name} does not exist")
             return None
