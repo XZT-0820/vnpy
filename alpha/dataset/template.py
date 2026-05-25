@@ -164,6 +164,7 @@ class AlphaDataset:
             Number of lag days to generate (0 to lag_days inclusive).
         """
         if factor_df.is_empty():
+            logger.error(f"Factor {factor_name} has no data")
             return
 
         required: set[str] = {"datetime", "vt_symbol", "data"}

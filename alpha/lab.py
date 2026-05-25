@@ -639,7 +639,7 @@ class AlphaLab:
 
         return contracts
 
-    def load_trading_days(self) -> list[date]:
+    def load_trading_days(self, start: datetime | date = None, end: datetime | date = None) -> list[date]:
         trading_days: list = []
 
         if self.trading_days_path.exists():
@@ -647,6 +647,14 @@ class AlphaLab:
                 trading_days = json.load(f)
             trading_days = [date.fromisoformat(t) for t in trading_days]
 
+            if start is not None:
+                trading_days = [d for d in trading_days if d >= start]
+            if end is not None:
+                trading_days = [d for d in trading_days if d <= end]
+
+        else:
+            logger.error(f"Trading days file not found, path: {self.trading_days_path}")
+            return []
         return trading_days
 
     def save_dataset(self, name: str, dataset: AlphaDataset) -> None:
@@ -1137,20 +1145,11 @@ class AlphaLab:
 
         factor_df = pl.scan_parquet(file_path)
 
-        if start is not None and end is not None:
-            factor_df = factor_df.filter((pl.col("datetime") >= start) & (pl.col("datetime") <= end) & (pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(['vt_symbol', 'datetime'])
-        if start is not None and end is None:
-            factor_df = factor_df.filter((pl.col("datetime") >= start) & (
-                pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(
-                ['vt_symbol', 'datetime'])
-        if start is None and end is not None:
-            factor_df = factor_df.filter((pl.col("datetime") <= end) & (
-                pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(
-                ['vt_symbol', 'datetime'])
-        if start is None and end is None:
-            factor_df = factor_df.filter((
-                pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(
-                ['vt_symbol', 'datetime'])
+        if start is not None:
+            factor_df = factor_df.filter((pl.col("datetime") >= start))
+        if end is not None:
+            factor_df = factor_df.filter((pl.col("datetime") <= end))
+        factor_df = factor_df.filter((pl.lit(True) if symbols is None else pl.col('vt_symbol').is_in(symbols))).sort(['vt_symbol', 'datetime'])
         factor_df = factor_df.collect()
 
         found_symbols = list(factor_df['vt_symbol'].unique())
