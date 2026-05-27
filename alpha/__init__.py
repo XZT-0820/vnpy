@@ -3,7 +3,12 @@ from .dataset import AlphaDataset, Segment, to_datetime
 from .model import AlphaModel
 from .strategy import AlphaStrategy, BacktestingEngine
 from .lab import AlphaLab
-
+from .walkforward import (
+    WalkForwardWindow,
+    WindowGenerator,
+    WalkForwardRunner,
+    LGBMLR_Runner,
+)
 
 __all__ = [
     "logger",
@@ -13,5 +18,9 @@ __all__ = [
     "AlphaModel",
     "AlphaStrategy",
     "BacktestingEngine",
-    "AlphaLab"
+    "AlphaLab",
+    "WalkForwardWindow",
+    "WindowGenerator",
+    "WalkForwardRunner",
+    "LGBMLR_Runner",
 ]
