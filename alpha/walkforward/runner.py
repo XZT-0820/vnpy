@@ -155,7 +155,7 @@ class WalkForwardRunner(ABC):
 
         raise NotImplementedError
 
-    def run(self, windows: list[WalkForwardWindow]) -> dict:
+    def run(self, windows: list[WalkForwardWindow], log: bool = True) -> dict:
         """
         执行完整滚动回测：
         1. 遍历所有窗口，run_window() 收集信号
@@ -164,6 +164,15 @@ class WalkForwardRunner(ABC):
         4. 初始化 BacktestingEngine2 并执行一次回测
         5. 返回 calculate_statistics() 结果
         """
+
+        original_handlers = None
+        if not log:
+            import sys
+            original_handlers = logger._core.handlers.copy()
+            logger.remove()
+            logger.add(sys.stderr, level="WARNING")
+
+
         # 1. 逐窗口执行
         for window in windows:
             signal = self.run_window(window)
@@ -220,10 +229,22 @@ class WalkForwardRunner(ABC):
         self.engine.run_backtesting()
         self.engine.calculate_result()
         stats = self.engine.calculate_statistics()
-        self.engine.show_chart()
-        # 显示超额收益分析结果
-        self.engine.show_performance(benchmark_symbol=self.benchmark_symbol)
+        if log:
+            self.engine.show_chart()
+            # 显示超额收益分析结果
+            self.engine.show_performance(benchmark_symbol=self.benchmark_symbol)
         logger.info(f"WalkForward {self.name} 回测完成")
+
+        if not log and original_handlers is not None:
+            logger.remove()
+            for handler_id, handler_config in original_handlers.items():
+                logger.add(
+                    handler_config._sink,
+                    level=handler_config._level,
+                    format=handler_config._format,
+                    filter=handler_config._filter,
+                )
+
         return stats
 
 
@@ -351,7 +372,7 @@ class LGBMLR_Runner(WalkForwardRunner):
             'lambda_l1': self.model_params.get('lambda_l1', 30),
             'lambda_l2': self.model_params.get('lambda_l2', 0.0),
             'boosting_type': 'gbdt',
-            'device': 'cpu',
+            'device': 'gpu',
             'verbose': -1,
             'seed': self.seed,
             'num_threads': -1,
