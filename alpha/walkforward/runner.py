@@ -163,18 +163,26 @@ class WalkForwardRunner(ABC):
         3. 保存拼接信号
         4. 初始化 BacktestingEngine2 并执行一次回测
         5. 返回 calculate_statistics() 结果
+        6. log = Flase, Optuna调优时, 将logger.warning级别以下的静默
         """
+        _orig_info = None
+        _orig_success = None
         if not log:
-            logger.disable("vnpy")
+            _orig_info = logger.info
+            _orig_success = logger.success
+            logger.info = lambda *a, **k: None
+            logger.success = lambda *a, **k: None
 
         try:
             # 1. 逐窗口执行
             for window in windows:
+                logger.info('-------------------------------------------------------------------------------')
                 signal = self.run_window(window)
                 self.signals.append(signal)
                 logger.info(f"[Window {window.index}] 获取信号完成，shape={signal.shape}")
 
             # 2. 拼接完整信号
+            logger.info('-------------------------------------------------------------------------------')
             logger.info("拼接所有窗口测试集信号...")
             all_signal: pl.DataFrame = pl.concat(self.signals).sort(["datetime", "vt_symbol"]).unique()
             self.signals.append(all_signal)
@@ -183,10 +191,10 @@ class WalkForwardRunner(ABC):
             # 3. 初始化回测引擎
             test_start = windows[0].test_start
             test_end = windows[-1].test_end
-
+            logger.info('-------------------------------------------------------------------------------')
             logger.info(f"初始化回测引擎: {test_start.date()} ~ {test_end.date()}")
             self.engine = self.engine_class(self.lab)
-
+            logger.info(f'回测引擎: {self.engine}')
             # 加载股票池
             component_symbols = self.lab.load_component_symbols(
                 self.benchmark_symbol,
@@ -219,7 +227,7 @@ class WalkForwardRunner(ABC):
             # 4. 添加策略并回测
             logger.info(f'载入选股策略{self.strategy_class}...')
             self.engine.add_strategy(self.strategy_class, self.strategy_params, all_signal)
-            logger.info(f'WalkForward {self.name} 回测开始：')
+            logger.info(f'WalkForward {self.name} 开始回测：')
             self.engine.load_data()
             self.engine.run_backtesting()
             self.engine.calculate_result()
@@ -233,8 +241,10 @@ class WalkForwardRunner(ABC):
             return stats
 
         finally:
-            if not log:
-                logger.enable("vnpy")
+            if _orig_info is not None:
+                logger.info = _orig_info
+            if _orig_success is not None:
+                logger.success = _orig_success
 
 
 
@@ -387,7 +397,7 @@ class LGBMLR_Runner(WalkForwardRunner):
 
     def predict_signal(self, model, **params) -> pl.DataFrame:
         """在测试集上预测，返回信号"""
-        logger.info('---在测试集上预测---')
+        logger.info('--------------测试集上预测--------------')
         X_test = params["X_test"]
         meta_test = params["meta_test"]
         predictions = model.predict(X_test, num_iteration=model.best_iteration)
