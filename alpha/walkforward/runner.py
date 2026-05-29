@@ -164,88 +164,77 @@ class WalkForwardRunner(ABC):
         4. 初始化 BacktestingEngine2 并执行一次回测
         5. 返回 calculate_statistics() 结果
         """
-
-        original_handlers = None
         if not log:
-            import sys
-            original_handlers = logger._core.handlers.copy()
-            logger.remove()
-            logger.add(sys.stderr, level="WARNING")
+            logger.disable("vnpy")
 
+        try:
+            # 1. 逐窗口执行
+            for window in windows:
+                signal = self.run_window(window)
+                self.signals.append(signal)
+                logger.info(f"[Window {window.index}] 获取信号完成，shape={signal.shape}")
 
-        # 1. 逐窗口执行
-        for window in windows:
-            signal = self.run_window(window)
-            self.signals.append(signal)
-            logger.info(f"[Window {window.index}] 获取信号完成，shape={signal.shape}")
+            # 2. 拼接完整信号
+            logger.info("拼接所有窗口测试集信号...")
+            all_signal: pl.DataFrame = pl.concat(self.signals).sort(["datetime", "vt_symbol"]).unique()
+            self.signals.append(all_signal)
+            self.save_all_signal(all_signal)
 
-        # 2. 拼接完整信号
-        logger.info("拼接所有窗口测试集信号...")
-        all_signal: pl.DataFrame = pl.concat(self.signals).sort(["datetime", "vt_symbol"]).unique()
-        self.signals.append(all_signal)
-        self.save_all_signal(all_signal)
+            # 3. 初始化回测引擎
+            test_start = windows[0].test_start
+            test_end = windows[-1].test_end
 
-        # 3. 初始化回测引擎
-        test_start = windows[0].test_start
-        test_end = windows[-1].test_end
+            logger.info(f"初始化回测引擎: {test_start.date()} ~ {test_end.date()}")
+            self.engine = self.engine_class(self.lab)
 
-        logger.info(f"初始化回测引擎: {test_start.date()} ~ {test_end.date()}")
-        self.engine = self.engine_class(self.lab)
+            # 加载股票池
+            component_symbols = self.lab.load_component_symbols(
+                self.benchmark_symbol,
+                test_start,
+                test_end,
+            )
 
-        # 加载股票池
-        component_symbols = self.lab.load_component_symbols(
-            self.benchmark_symbol,
-            test_start,
-            test_end,
-        )
+            # 回测参数（含默认值）
+            interval = self.backtest_params.get("interval", Interval.DAILY)
+            capital = self.backtest_params.get("capital", 100_000)
+            min_commission = self.backtest_params.get("min_commission", 5.0)
+            risk_free = self.backtest_params.get("risk_free", 0.0)
+            annual_days = self.backtest_params.get("annual_days", 240)
+            slippage = self.backtest_params.get("slippage", 0.0006)
+            adjust_type = self.backtest_params.get("adjust_type", "none")
 
-        # 回测参数（含默认值）
-        interval = self.backtest_params.get("interval", Interval.DAILY)
-        capital = self.backtest_params.get("capital", 100_000)
-        min_commission = self.backtest_params.get("min_commission", 5.0)
-        risk_free = self.backtest_params.get("risk_free", 0.0)
-        annual_days = self.backtest_params.get("annual_days", 240)
-        slippage = self.backtest_params.get("slippage", 0.0006)
-        adjust_type = self.backtest_params.get("adjust_type", "none")
+            self.engine.set_parameters(
+                vt_symbols=component_symbols,
+                interval=interval,
+                start=test_start,
+                end=test_end,
+                capital=capital,
+                min_commission=min_commission,
+                risk_free=risk_free,
+                annual_days=annual_days,
+                slippage=slippage,
+                adjust_type=adjust_type,
+            )
 
-        self.engine.set_parameters(
-            vt_symbols=component_symbols,
-            interval=interval,
-            start=test_start,
-            end=test_end,
-            capital=capital,
-            min_commission=min_commission,
-            risk_free=risk_free,
-            annual_days=annual_days,
-            slippage=slippage,
-            adjust_type=adjust_type,
-        )
+            # 4. 添加策略并回测
+            logger.info(f'载入选股策略{self.strategy_class}...')
+            self.engine.add_strategy(self.strategy_class, self.strategy_params, all_signal)
+            logger.info(f'WalkForward {self.name} 回测开始：')
+            self.engine.load_data()
+            self.engine.run_backtesting()
+            self.engine.calculate_result()
+            stats = self.engine.calculate_statistics()
+            if log:
+                self.engine.show_chart()
+                # 显示超额收益分析结果
+                self.engine.show_performance(benchmark_symbol=self.benchmark_symbol)
+            logger.info(f"WalkForward {self.name} 回测完成")
 
-        # 4. 添加策略并回测
-        logger.info(f'载入选股策略{self.strategy_class}...')
-        self.engine.add_strategy(self.strategy_class, self.strategy_params, all_signal)
-        logger.info(f'WalkForward {self.name} 回测开始：')
-        self.engine.load_data()
-        self.engine.run_backtesting()
-        self.engine.calculate_result()
-        stats = self.engine.calculate_statistics()
-        if log:
-            self.engine.show_chart()
-            # 显示超额收益分析结果
-            self.engine.show_performance(benchmark_symbol=self.benchmark_symbol)
-        logger.info(f"WalkForward {self.name} 回测完成")
+            return stats
 
-        if not log and original_handlers is not None:
-            logger.remove()
-            for handler_id, handler_config in original_handlers.items():
-                logger.add(
-                    handler_config._sink,
-                    level=handler_config._level,
-                    format=handler_config._format,
-                    filter=handler_config._filter,
-                )
-
-        return stats
+        finally:
+            if not log:
+                logger.enable("vnpy")
 
 
 
