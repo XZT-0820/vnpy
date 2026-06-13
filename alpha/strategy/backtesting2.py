@@ -856,6 +856,15 @@ class BacktestingEngine2:
         price = round_to(price, self.priceticks[vt_symbol])
         symbol, exchange = extract_vt_symbol(vt_symbol)
 
+        # 对买入委托作资金检查：资金不足下不了单
+        if direction == Direction.LONG:
+            trade_turnover: float = price * volume * size
+            trade_commission: float = max(trade_turnover * self.long_rates[vt_symbol], self.min_commission)
+            required_cash: float = trade_turnover + trade_commission
+            if self.cash < required_cash:
+                logger.warning('资金不足，委托失败')
+                return []
+
         self.limit_order_count += 1
 
         order: OrderData = OrderData(

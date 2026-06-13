@@ -37,7 +37,7 @@ class AlphaLab:
         # Set data paths
         self.lab_path: Path = Path(lab_path)
 
-        self.K_path: Path = self.lab_path.joinpath("K")
+        self.K_path: Path = self.lab_path.joinpath("k")
 
         self.daily_path: Path = self.K_path.joinpath("daily")
         self.daily_pre_path: Path = self.K_path.joinpath("daily_pre")
@@ -253,7 +253,8 @@ class AlphaLab:
         start: datetime | str,
         end: datetime | str,
         extended_days: int,
-        adjust_type: str
+        adjust_type: str,
+        skip_suspended: bool = False,
     ) -> pl.DataFrame | None:
         """Load bar data as DataFrame"""
         if not vt_symbols:
@@ -330,57 +331,12 @@ class AlphaLab:
             )
             df = df.collect()
 
-            # # Open file
-            # df: pl.DataFrame = pl.read_parquet(file_path)
-            #
-            # # Filter by date range
-            # df = df.filter((pl.col("datetime") >= start) & (pl.col("datetime") <= end))
-            #
-            # # Specify data types
-            # if interval == Interval.WEEKLY or interval == Interval.MONTHLY: # 周k、月k需要合成 所以没有vwap
-            #     df = df.with_columns(
-            #         pl.col("open"),
-            #         pl.col("high"),
-            #         pl.col("low"),
-            #         pl.col("close"),
-            #         pl.col("volume"),
-            #         pl.col("turnover"),
-            #         pl.col("open_interest")
-            #     )
-            # else:
-            #     df = df.with_columns(
-            #     pl.col("open"),
-            #     pl.col("high"),
-            #     pl.col("low"),
-            #     pl.col("close"),
-            #     pl.col("volume"),
-            #     pl.col("turnover"),
-            #     pl.col("open_interest"),
-            #     (pl.col("turnover") / pl.col("volume")).alias("vwap")
-            # )
-
             # Check for empty data
             if df.is_empty():
                 continue
 
-            # Normalize prices
-            # close_0: float = df.select(pl.col("close")).item(0, 0)
-            #
-            # df = df.with_columns(
-            #     (pl.col("open") / close_0).alias("open"),
-            #     (pl.col("high") / close_0).alias("high"),
-            #     (pl.col("low") / close_0).alias("low"),
-            #     (pl.col("close") / close_0).alias("close"),
-            # )
-
-            # Convert zeros to NaN for suspended trading days
-            numeric_columns: list = df.columns[1:]                              # Extract numeric columns
-
-            mask: pl.Series = df[numeric_columns].sum_horizontal() == 0         # Sum by row, if 0 then suspended
-
-            df = df.with_columns(                                               # Convert suspended day values to NaN
-                [pl.when(mask).then(float("nan")).otherwise(pl.col(col)).alias(col) for col in numeric_columns]
-            )
+            if interval == Interval.DAILY and skip_suspended:
+                df = df.filter(pl.col("volume") != 0)
 
             # Add symbol column
             df = df.with_columns(pl.lit(vt_symbol).alias("vt_symbol"))

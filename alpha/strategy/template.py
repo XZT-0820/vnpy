@@ -36,6 +36,9 @@ class AlphaStrategy(metaclass=ABCMeta):
         self.orders: dict[str, OrderData] = {}
         self.active_orderids: set[str] = set()
 
+        # buy symbols in order by signal
+        self.buy_symbols: list[str] = []
+
         # Set strategy parameters
         for k, v in setting.items():
             if hasattr(self, k):
