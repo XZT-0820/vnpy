@@ -10,9 +10,9 @@ from empyrical import annual_return
 from vnpy.trader.constant import Interval
 from vnpy.alpha.lab import AlphaLab
 from vnpy.alpha import Segment, AlphaDataset
-from vnpy.alpha.strategy import BacktestingEngine2
-from vnpy.alpha.strategy.strategies.equity_demo_strategy2 import EquityDemoStrategy2
-from vnpy.alpha import logger, AlphaStrategy
+from vnpy.alpha.strategy import BacktestingEngine2, BacktestingEngine3
+from vnpy.alpha.strategy.strategies.equity_demo_strategy3 import EquityDemoStrategy3
+from vnpy.alpha import logger, AlphaStrategy, AlphaStrategy3
 import lightgbm as lgb
 from .window import WalkForwardWindow
 
@@ -45,8 +45,8 @@ class WalkForwardRunner(ABC):
         name: str,
         lab: AlphaLab,
         dataset: AlphaDataset,
-        engine_class: Type[BacktestingEngine2],
-        strategy_class: Type[AlphaStrategy],
+        engine_class: Type[BacktestingEngine2 | BacktestingEngine3],
+        strategy_class: Type[AlphaStrategy | AlphaStrategy3],
         windows: list[WalkForwardWindow],
         model_params: dict | None = None,
         strategy_params: dict | None = None,
@@ -69,7 +69,7 @@ class WalkForwardRunner(ABC):
 
         self.engine_class = engine_class
         # 回测引擎（run 时初始化）
-        self.engine: BacktestingEngine2
+        self.engine: BacktestingEngine3
         # 中间结果存储
         self.models: list = []
         self.signals: list[pl.DataFrame] = []
@@ -161,7 +161,7 @@ class WalkForwardRunner(ABC):
         1. 遍历所有窗口，run_window() 收集信号
         2. 拼接信号为一个完整 df，append 到 self.signals
         3. 保存拼接信号
-        4. 初始化 BacktestingEngine2 并执行一次回测
+        4. 初始化 BacktestingEngine3 并执行一次回测
         5. 返回 calculate_statistics() 结果
         6. log = Flase, Optuna调优时, 将logger.warning级别以下的静默
         """
@@ -206,7 +206,7 @@ class WalkForwardRunner(ABC):
             interval = self.backtest_params.get("interval", Interval.DAILY)
             capital = self.backtest_params.get("capital", 100_000)
             min_commission = self.backtest_params.get("min_commission", 5.0)
-            risk_free = self.backtest_params.get("risk_free", 0.0)
+            risk_free = self.backtest_params.get("risk_free", 0.03)
             annual_days = self.backtest_params.get("annual_days", 240)
             slippage = self.backtest_params.get("slippage", 0.0006)
             adjust_type = self.backtest_params.get("adjust_type", "none")

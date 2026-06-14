@@ -881,7 +881,7 @@ class BacktestingEngine3:
             trade_commission: float = max(trade_turnover * self.long_rates[vt_symbol], self.min_commission)
             required_cash: float = trade_turnover + trade_commission
             if self.cash < required_cash:
-                logger.warning('资金不足，委托失败')
+                self.write_log('资金不足，委托失败')
                 return []
 
         self.limit_order_count += 1
@@ -945,6 +945,78 @@ class BacktestingEngine3:
             holding_value += bar.close_price * pos * size
 
         return holding_value
+
+    def print_trading_log(self) -> None:
+        """Print trading activity in structured daily format, like a real trading terminal."""
+        from collections import defaultdict
+
+        # Group orders and trades by date
+        daily_orders: dict[date, list[OrderData]] = defaultdict(list)
+        daily_trades: dict[date, list[TradeData]] = defaultdict(list)
+
+        for order in self.limit_orders.values():
+            if order.datetime:
+                daily_orders[order.datetime.date()].append(order)
+
+        for trade in self.trades.values():
+            if trade.datetime:
+                daily_trades[trade.datetime.date()].append(trade)
+
+        all_dates: list[date] = sorted(set(daily_orders) | set(daily_trades))
+
+        if not all_dates:
+            print("无交易记录")
+            return
+
+        for d in all_dates:
+            orders: list[OrderData] = daily_orders.get(d, [])
+            trades: list[TradeData] = daily_trades.get(d, [])
+
+            buy_trades = [t for t in trades if t.direction == Direction.LONG]
+            sell_trades = [t for t in trades if t.direction == Direction.SHORT]
+            buy_orders = [o for o in orders if o.direction == Direction.LONG]
+            sell_orders = [o for o in orders if o.direction == Direction.SHORT]
+
+            if not buy_orders and not sell_orders and not trades:
+                continue
+
+            print(f"\n{'='*60}")
+            print(f"  {d}")
+            print(f"{'='*60}")
+
+            if sell_orders:
+                print(f"  卖出委托 ({len(sell_orders)}笔):")
+                for o in sell_orders:
+                    flag: str = {Status.ALLTRADED: "+", Status.PARTTRADED: "~", Status.CANCELLED: "-", Status.REJECTED: "x"}.get(o.status, "?")
+                    print(f"    [{flag}] {o.vt_symbol:12s} {o.volume:>8.0f}股  委托 {o.price:>8.2f}")
+
+            if buy_orders:
+                print(f"  买入委托 ({len(buy_orders)}笔):")
+                for o in buy_orders:
+                    flag: str = {Status.ALLTRADED: "+", Status.PARTTRADED: "~", Status.CANCELLED: "-", Status.REJECTED: "x"}.get(o.status, "?")
+                    print(f"    [{flag}] {o.vt_symbol:12s} {o.volume:>8.0f}股  委托 {o.price:>8.2f}")
+
+            if sell_trades:
+                print(f"  卖出成交 ({len(sell_trades)}笔):")
+                sell_cost_dict: dict = getattr(self.strategy, 'sell_cost', {})
+                for t in sell_trades:
+                    cost: float | None = sell_cost_dict.get(t.vt_tradeid)
+                    if cost and cost > 0:
+                        pnl_pct: float = (t.price / cost - 1) * 100
+                        print(f"    [>] {t.vt_symbol:12s} {t.volume:>8.0f}股  成交 {t.price:>8.2f}  |  成本 {cost:>8.2f}  |  {pnl_pct:+.1f}%")
+                    else:
+                        print(f"    [>] {t.vt_symbol:12s} {t.volume:>8.0f}股  成交 {t.price:>8.2f}")
+
+            if buy_trades:
+                print(f"  买入成交 ({len(buy_trades)}笔):")
+                for t in buy_trades:
+                    print(f"    [>] {t.vt_symbol:12s} {t.volume:>8.0f}股  成交 {t.price:>8.2f}")
+
+            daily_result: PortfolioDailyResult | None = self.daily_results.get(d)
+            if daily_result:
+                print(f"  持仓市值: {daily_result.holding_value:,.0f}  |  "
+                      f"净盈亏: {daily_result.net_pnl:+,.0f}  |  "
+                      f"成交 {daily_result.trade_count}笔")
 
 
 class ContractDailyResult:
