@@ -41,7 +41,7 @@ class BacktestingEngine3:
         self.priceticks: dict[str, float] = {}
 
         self.capital: float = 0
-        self.risk_free: float = 0
+        self.risk_free: float = 0.03
         self.annual_days: int = 0
 
         self.strategy_class: type[AlphaStrategy3]
@@ -80,7 +80,7 @@ class BacktestingEngine3:
         start: datetime,
         end: datetime,
         capital: int = 1_000_000,
-        risk_free: float = 0,
+        risk_free: float = 0.03,
         annual_days: int = 240,
         min_commission: float = 5,
         slippage: float = 0.0001,
@@ -218,7 +218,7 @@ class BacktestingEngine3:
             fields: list = [
                 "date", "trade_count", "long_trade_count", "short_trade_count", "turnover",
                 "commission", "trading_pnl",
-                "holding_pnl", "total_pnl", "net_pnl"
+                "holding_pnl", "total_pnl", "net_pnl", "holding_value"
             ]
             for key in fields:
                 value = getattr(daily_result, key)
@@ -236,6 +236,7 @@ class BacktestingEngine3:
                 pl.Series("holding_pnl", results["holding_pnl"], dtype=pl.Float64),
                 pl.Series("total_pnl", results["total_pnl"], dtype=pl.Float64),
                 pl.Series("net_pnl", results["net_pnl"], dtype=pl.Float64),
+                pl.Series("holding_value", results["holding_value"], dtype=pl.Float64),
             ])
 
         logger.info("逐日盯市盈亏计算完成")
@@ -273,6 +274,9 @@ class BacktestingEngine3:
         return_std: float = 0
         sharpe_ratio: float = 0
         return_drawdown_ratio: float = 0
+        calmar_ratio: float = 0
+        sortino_ratio: float = 0
+        capital_utilization: float = 0
 
         # Check if bankruptcy occurred
         positive_balance: bool = False
@@ -356,6 +360,21 @@ class BacktestingEngine3:
 
             return_drawdown_ratio = -total_net_pnl / max_drawdown
 
+            # Sortino Ratio: annual return / downside deviation
+            downside_returns: pl.Series = df.filter(pl.col("return") < 0)["return"]
+            if downside_returns.len() > 1:
+                downside_std: float = cast(float, downside_returns.std()) * 100
+                if downside_std:
+                    sortino_ratio = (daily_return - daily_risk_free) / downside_std * np.sqrt(self.annual_days)
+
+            # Capital utilization: avg holding_value / avg balance
+            if "holding_value" in df.columns:
+                capital_utilization = cast(float, (df["holding_value"] / df["balance"]).mean()) * 100
+
+            # Calmar Ratio: annual return / |max drawdown|
+            if max_ddpercent:
+                calmar_ratio = annual_return / abs(max_ddpercent)
+
         # Output results
         logger.info("-" * 30)
         logger.info(f"首个交易日：  {start_date}")
@@ -390,7 +409,10 @@ class BacktestingEngine3:
         logger.info(f"日均收益率：  {daily_return:,.2f}%")
         logger.info(f"收益标准差：  {return_std:,.2f}%")
         logger.info(f"Sharpe Ratio：  {sharpe_ratio:,.2f}")
+        logger.info(f"Sortino Ratio：  {sortino_ratio:,.2f}")
+        logger.info(f"Calmar Ratio：  {calmar_ratio:,.2f}")
         logger.info(f"收益回撤比：  {return_drawdown_ratio:,.2f}")
+        logger.info(f"日均资金利用率：  {capital_utilization:,.2f}%")
 
         statistics: dict = {
             "start_date": start_date,
@@ -421,6 +443,9 @@ class BacktestingEngine3:
             "return_std": return_std,
             "sharpe_ratio": sharpe_ratio,
             "return_drawdown_ratio": return_drawdown_ratio,
+            "capital_utilization": capital_utilization,
+            "calmar_ratio": calmar_ratio,
+            "sortino_ratio": sortino_ratio,
         }
 
         # Filter extreme values
@@ -623,9 +648,9 @@ class BacktestingEngine3:
             # Check if historical data for the specified time of the contract is obtained
             if bar:
                 # Update K-line for order matching
-                self.bars[vt_symbol] = bar
+                self.bars[vt_symbol] = bar # 按照目前的数据源来看，self.bars只是在填充已经退市的股票数据 停牌的股票仍然在bars里，因为数据源对停牌股票已经做了前向填充
                 # Cache K-line data for strategy.on_bars update
-                bars[vt_symbol] = bar
+                bars[vt_symbol] = bar   # bars 是今天有数据的股票，可能是停牌，但一定是在市的  至于包含哪些池子，要看history_data 目前是回测期纳入过指数的全部股票
             # If not available, but there is contract data cached in the self.bars dictionary, use previous data to fill
             elif vt_symbol in self.bars:
                 old_bar: BarData = self.bars[vt_symbol]
@@ -643,8 +668,7 @@ class BacktestingEngine3:
                 self.bars[vt_symbol] = fill_bar
 
         self.strategy.on_bars(bars)
-        self.cross_order()
-        self.strategy.cancel_all()
+
         self.strategy.sync_targets()
 
         self.update_daily_close(self.bars, dt)
@@ -730,35 +754,14 @@ class BacktestingEngine3:
         size: float = self.sizes[order.vt_symbol]
         trade_turnover: float = trade_price * order.volume * size
 
-        if order.direction == Direction.LONG:                       # 限价单能成交多少成交多少----计算基于订单交易量的最大可成交量
-
+        if order.direction == Direction.LONG:
             trade_commission: float = max(trade_turnover * self.long_rates[order.vt_symbol], self.min_commission)
             required_cash: float = trade_turnover + trade_commission
-
-            # 买单资金不足：模拟实盘能成交多少成交多少
-            if self.cash < required_cash:
-                max_volume = self.calculate_max_volume(trade_price, size, order)
-                if max_volume == 0:
-                    order.status = Status.REJECTED
-                    order.traded = 0
-                    self.strategy.update_order(order)
-                    if order.vt_orderid in self.active_limit_orders:
-                        self.active_limit_orders.pop(order.vt_orderid)
-                    return
-                else:
-                    trade_turnover: float = trade_price * max_volume * size
-                    trade_commission: float = max(trade_turnover * self.long_rates[order.vt_symbol],
-                                                  self.min_commission)
-                    order.traded = max_volume
-                    order.status = Status.PARTTRADED
-
-            else:
-                order.traded = order.volume
-                order.status = Status.ALLTRADED
         else:
             trade_commission = max(trade_turnover * self.short_rates[order.vt_symbol], self.min_commission)
-            order.traded = order.volume
-            order.status = Status.ALLTRADED
+
+        order.traded = order.volume
+        order.status = Status.ALLTRADED
         # ==================== 成交 ====================
         self.strategy.update_order(order)
 
@@ -795,37 +798,36 @@ class BacktestingEngine3:
         self.strategy.update_trade(trade)
         self.trades[trade.vt_tradeid] = trade
 
-    def calculate_max_volume(self, trade_price: float, size, order) -> float:
-        """
-        针对单个订单计算最高成交量
-
-        """
-        K = 100 * trade_price * size
-
-        # 情况1：k >= m/(K*l) 且 k < R/(K*(1+l))
-        lower1 = self.min_commission / (K * self.long_rates[order.vt_symbol])
-        upper1 = self.cash / (K * (1 + self.long_rates[order.vt_symbol]))
-        k1 = None
-        if upper1 > lower1:
-            k_upper = math.floor(upper1)
-            k_lower = math.ceil(lower1)
-            if k_upper >= k_lower:
-                k1 = k_upper
-
-        # 情况2：k < m/(K*l) 且 k < (R-m)/K
-        k2 = None
-        if self.cash > self.min_commission:
-            upper2 = min((self.cash - self.min_commission) / K,
-                         self.min_commission / (K * self.long_rates[order.vt_symbol]))
-            if upper2 > 0:
-                k_upper2 = math.floor(upper2)
-                if k_upper2 >= 0:
-                    k2 = k_upper2
-
-        candidates = [k for k in (k1, k2) if k is not None]
-        best_k = max(candidates) if candidates else 0
-
-        return best_k * 100
+    # def calculate_max_volume(self, trade_price: float, size, order) -> float:
+    #     """
+    #     针对单个订单计算最高成交量
+    #     """
+    #     K = 100 * trade_price * size
+    #
+    #     # 情况1：k >= m/(K*l) 且 k < R/(K*(1+l))
+    #     lower1 = self.min_commission / (K * self.long_rates[order.vt_symbol])
+    #     upper1 = self.cash / (K * (1 + self.long_rates[order.vt_symbol]))
+    #     k1 = None
+    #     if upper1 > lower1:
+    #         k_upper = math.floor(upper1)
+    #         k_lower = math.ceil(lower1)
+    #         if k_upper >= k_lower:
+    #             k1 = k_upper
+    #
+    #     # 情况2：k < m/(K*l) 且 k < (R-m)/K
+    #     k2 = None
+    #     if self.cash > self.min_commission:
+    #         upper2 = min((self.cash - self.min_commission) / K,
+    #                      self.min_commission / (K * self.long_rates[order.vt_symbol]))
+    #         if upper2 > 0:
+    #             k_upper2 = math.floor(upper2)
+    #             if k_upper2 >= 0:
+    #                 k2 = k_upper2
+    #
+    #     candidates = [k for k in (k1, k2) if k is not None]
+    #     best_k = max(candidates) if candidates else 0
+    #
+    #     return best_k * 100
 
     def get_signal(self) -> pl.DataFrame:
         """Get model prediction signal for current time"""
@@ -1049,6 +1051,7 @@ class PortfolioDailyResult:
         self.holding_pnl: float = 0
         self.total_pnl: float = 0
         self.net_pnl: float = 0
+        self.holding_value: float = 0
 
     def add_trade(self, trade: TradeData) -> None:
         """Add trade information"""
@@ -1087,6 +1090,11 @@ class PortfolioDailyResult:
             self.net_pnl += contract_result.net_pnl
 
             self.end_poses[vt_symbol] = contract_result.end_pos
+
+        # Compute end-of-day holding market value
+        for vt_symbol, end_pos in self.end_poses.items():
+            if end_pos:
+                self.holding_value += end_pos * self.close_prices.get(vt_symbol, 0) * sizes[vt_symbol]
 
     def update_close_prices(self, close_prices: dict[str, float]) -> None:
         """Update daily close prices"""

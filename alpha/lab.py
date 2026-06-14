@@ -248,17 +248,20 @@ class AlphaLab:
 
     def load_bar_df(    #-------------------做了市值中性化？
         self,
-        vt_symbols: list[str],
+        vt_symbols: list[str] | str,
         interval: Interval | str,
         start: datetime | str,
         end: datetime | str,
-        extended_days: int,
-        adjust_type: str,
+        extended_days: int = 0,
+        adjust_type: str = 'none',
         skip_suspended: bool = False,
     ) -> pl.DataFrame | None:
         """Load bar data as DataFrame"""
         if not vt_symbols:
             return None
+
+        if isinstance(vt_symbols, str):
+            vt_symbols = [vt_symbols]
 
         # Convert types
         if isinstance(interval, str):

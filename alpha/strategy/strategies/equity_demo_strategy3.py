@@ -68,7 +68,7 @@ class EquityDemoStrategy3(AlphaStrategy3):
 
             bar: BarData | None = bars.get(vt_symbol)
 
-            # Skip suspended stocks
+            # Skip suspended stocks      not bar可能是今天指数调仓，某只股票有信号但是已经被去除了
             if not bar or not bar.open_price or bar.volume == 0:
                 continue
 
