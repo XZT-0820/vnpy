@@ -1,7 +1,7 @@
 from .logger import logger
 from .dataset import AlphaDataset, Segment, to_datetime
 from .model import AlphaModel
-from .strategy import AlphaStrategy, BacktestingEngine
+from .strategy import AlphaStrategy, AlphaStrategy3, BacktestingEngine, BacktestingEngine2, BacktestingEngine3
 from .lab import AlphaLab
 from .walkforward import (
     WalkForwardWindow,
@@ -17,7 +17,10 @@ __all__ = [
     "to_datetime",
     "AlphaModel",
     "AlphaStrategy",
+    "AlphaStrategy3",
     "BacktestingEngine",
+    "BacktestingEngine2",
+    "BacktestingEngine3",
     "AlphaLab",
     "WalkForwardWindow",
     "WindowGenerator",
